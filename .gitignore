@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Environment variables
+.env
+
+# ChromaDB local storage
+chroma_storage/
+
+# Data files
+*.csv
