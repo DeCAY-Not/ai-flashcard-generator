@@ -12,23 +12,29 @@ load_dotenv()
 client = genai.Client()
 
 # --- SETUP PERSISTENT DATABASE ---
-# This saves the vectors to your hard drive so you don't rebuild it every time!
 db = chromadb.PersistentClient(path="./chroma_storage")
-collection_name = "gate_ds_notes"
+collection_name = "gate_cse_master"
 
-# Check if we already built this database
 existing_collections = [c.name for c in db.list_collections()]
 
 if collection_name not in existing_collections:
-    print("Database not found. Building it for the first time...")
+    print("Master database not found. Scanning PDF folder...")
     
-    pdf_path = "PDF/DS.pdf"
     raw_text = ""
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            if page.extract_text():
-                raw_text += page.extract_text() + "\n"
+    pdf_folder = "PDF"
+    
+    # 1. NEW: Loop through EVERY file in the PDF folder
+    for filename in os.listdir(pdf_folder):
+        if filename.endswith(".pdf"):
+            pdf_path = os.path.join(pdf_folder, filename)
+            print(f"Reading {filename}...")
+            
+            with pdfplumber.open(pdf_path) as pdf:
+                for page in pdf.pages:
+                    if page.extract_text():
+                        raw_text += page.extract_text() + "\n"
 
+    print("Cleaning and chunking data...")
     cleaned_text = "\n".join([line.strip() for line in raw_text.split("\n") if line.strip()])
     
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
@@ -46,37 +52,45 @@ if collection_name not in existing_collections:
         embeddings=embeddings,
         documents=chunks
     )
-    print("✅ Database built and saved to disk!")
+    print("✅ Master database built and saved to disk!")
 else:
-    print("✅ Existing database found! Skipping extraction and loading instantly.")
+    print("✅ Existing master database found! Loading instantly.")
     collection = db.get_collection(name=collection_name)
 
 # --- PHASE 3 & 4: THE GENERATION LOOP ---
-print("\n--- RAG Flashcard Generator Active ---")
+print("\n--- Advanced GATE Flashcard Generator Active ---")
 print("Type 'quit' when you are done.")
 
-csv_filename = "gate_flashcards.csv"
+csv_filename = "gate_master_flashcards.csv"
 
-# Create the CSV with headers if it doesn't exist yet
 if not os.path.exists(csv_filename):
     with open(csv_filename, mode='w', newline='', encoding='utf-8') as file:
         csv.writer(file).writerow(["Question", "Answer"])
 
-# Keep asking for topics until you type 'quit'
 while True:
     query = input("\nWhat topic do you want flashcards for? (or 'quit'): ")
     if query.lower() == 'quit':
         break
 
-    print("Searching document and generating...")
+    print("Searching documents and generating exam-level questions...")
     
-    # Retrieve
     q_vec = client.models.embed_content(model="gemini-embedding-001", contents=query).embeddings[0].values
-    results = collection.query(query_embeddings=[q_vec], n_results=5)
+    
+    # 2. NEW: Retrieve more chunks (8 instead of 5) for broader context
+    results = collection.query(query_embeddings=[q_vec], n_results=8)
     context = "\n\n---\n\n".join(results["documents"][0])
 
-    # Generate
-    sys_instruct = "You are a GATE CSE study assistant. Using ONLY the context, generate flashcards. Return strictly valid JSON containing a flat array of objects with keys 'Question' and 'Answer'."
+    # 3. NEW: Aggressive Prompt Engineering for GATE-level rigor
+    sys_instruct = """You are a strict examiner writing flashcards for a highly competitive computer science exam. 
+Using ONLY the provided context, generate exactly 5 to 7 advanced study flashcards.
+Do not ask simple definition questions. Instead, focus on:
+- Time and space complexities.
+- Mathematical formulas and their specific use cases.
+- Edge cases, exceptions, and conceptual traps.
+- "What happens if..." scenario questions.
+
+Return strictly valid JSON containing a flat array of objects with keys 'Question' and 'Answer'. Make the answers highly detailed but concise."""
+
     prompt = f"CONTEXT:\n{context}\n\nUSER QUERY:\n{query}"
     
     try:
@@ -85,22 +99,21 @@ while True:
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=sys_instruct,
-                temperature=0.0,
+                temperature=0.2, # Slightly higher temperature to allow for more complex question formulation
                 response_mime_type="application/json",
             ),
         )
         
         flashcards = json.loads(response.text)
         
-        # Append to CSV (mode='a') so we don't overwrite previous cards
         with open(csv_filename, mode='a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             for card in flashcards:
                 writer.writerow([card.get("Question", ""), card.get("Answer", "")])
                 
-        print(f"✅ Added {len(flashcards)} new cards to {csv_filename}!")
+        print(f"✅ Generated {len(flashcards)} advanced cards and saved to {csv_filename}!")
         
     except Exception as e:
         print(f"❌ Error generating cards: {e}")
 
-print("Session closed. Good luck with the GATE prep!")
+print("Session closed. Time to review in Anki!")
